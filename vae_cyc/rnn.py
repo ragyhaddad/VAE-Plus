@@ -73,19 +73,26 @@ class VAE(pl.LightningModule):
             h = h.unsqueeze(0)
         return h
     
-    def _cyclical_anneal(self, T, M, t, R=0.7):
-        tm = T / M 
-        mod = (t - 1) % tm
-        a = mod / tm
-        if a > R:
-            a = R 
+    def cyclical_annealing(self,T,M,step,R=0.4, max_kl_weight=1):
+        """
+        Implementing: <https://arxiv.org/abs/1903.10145>
+        T = Total steps 
+        M = Number of cycles 
+        R = Proportion used to increase beta
+        t = Global step 
+        """
+        period = (T/M) # N_iters/N_cycles 
+        internal_period = (step) % (period)  # Itteration_number/(Global Period)
+        tau = internal_period/period
+        if tau > R:
+            tau = max_kl_weight
         else:
-            a = min(1, a)
-        return a
+            tau = min(max_kl_weight, tau/R) # Linear function 
+        return tau
     
     def kl_anneal_function(self, anneal_function, step):
         if anneal_function == 'cyclical':
-            return self._cyclical_anneal(self.c_step, self.n_cycles_anneal, t=step, R=self.max_kl_weight)
+            return self.cyclical_annealing(self.c_step, self.n_cycles_anneal, step=step, max_kl_weight=self.max_kl_weight)
         else:
             print('Anneal function not implemented')
             return self.kl_weight
@@ -161,9 +168,10 @@ class VAE(pl.LightningModule):
         r['r_loss'] = r_loss
         r['kl_loss'] = kl_loss
         r['lr'] = self.lr
+        r['kl_weight'] = self.kl_weight
+        r['global_step'] = self.global_step
         for key in r:
             self.log(f'train/{key}', r[key])
-        print(r)
         return r 
     
     def validation_step(self, batch, batch_idx):
@@ -185,4 +193,87 @@ class VAE(pl.LightningModule):
     
     def create_model(self, hparams):
         return VAE(**hparams)
+    
+
+    def seq_to_latent(self, seq, num_workers=4, add_gaussian=False, batch_size=32):
+        import pandas as pd
+        from vae_cyc import Dataset
+        from tqdm import tqdm
+        self.eval()
+        # tokenize the input sequences in batch
+        df = pd.DataFrame({'text': seq})
+        dataset = Dataset( df, target_col='text', vocab=self.vocab, max_len=300)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, collate_fn=dataset.collate)
+        out = []
+        device = self.device
+        with torch.no_grad():
+            for batch in tqdm(loader):
+                with_bos, _, lengths = batch
+                e = self.embedding(with_bos.to(device))
+                x_packed = pack_padded_sequence(e, lengths, batch_first=True, enforce_sorted=False)
+                _, h = self.encoder(x_packed)
+                h = self.resize_hidden_encoder(h, with_bos.size(0))
+                mu = self.mu_fc(h)
+                if add_gaussian:
+                    z = torch.normal(0,1, size=mu.size()).to(device)
+                    std = torch.exp(0.5 * self.logvar_fc(h))
+                    z = mu + std * z
+                else:
+                    z = mu
+                out.append(z)
+        return torch.cat(out, dim=0)
+    
+    def latent_to_seq_batched(self, z_batch, total=1, max_len=300, argmax=True, return_prob=False, num_workers=4, batch_size=32):
+        import pandas as pd
+        import torch.nn.functional as F
+        from vae_cyc import Dataset
+        from tqdm import tqdm
+
+        device = next(self.decoder.parameters()).device 
+        batch_size = z_batch.size(0)
+        z_batch = z_batch.to(device)
+        vseqs = []
+        probs = [] 
+        seqs = [[] for _ in range(batch_size)]
+        s_probs = [[] for _ in range(batch_size)]
+        for _ in range(total):
+            hidden = self.latent2hidden(z_batch)
+            hidden = self.resize_hidden_decoder(hidden, batch_size)
+            inputs = torch.tensor([self.vocab.sos_idx] * batch_size).to(device).unsqueeze(1)
+            e = self.embedding(inputs)
+            z_0 = z_batch.unsqueeze(1).repeat(1, e.size(1), 1)
+            inputs = torch.cat([e, z_0], dim=-1)
+
+            for _ in range(max_len):
+                outputs, hidden = self.decoder(inputs, hidden)
+                output_v = self.outputs2vocab(outputs)
+                output_v = output_v.view(batch_size, -1)
+                output_v = F.softmax(output_v, dim=-1)
+                if argmax is False:
+                    next_chars = []
+                    for i in range(len(output_v)):
+                        next_char = torch.multinomial(output_v[i], 1).item()
+                        next_chars.append(next_char)
+                    next_chars = torch.tensor(next_chars).to(device)
+                else:
+                    next_chars = torch.argmax(output_v, dim=-1)
+            
+                # update inputs
+                new_inputs = next_chars.clone().unsqueeze(1)
+                c = [self.vocab.idx2char[i] for i in next_chars.cpu().numpy()]
+                for i in range(batch_size):
+                    seqs[i].append(c[i])
+                    # s_probs[i].append(output_v[i, next_chars[i]].item())
+                e = self.embedding(new_inputs)
+                z_0 = z_batch.unsqueeze(1).repeat(1, e.size(1), 1)
+                inputs = torch.cat([e, z_0], dim=-1)
         
+        for i in range(batch_size):
+            try:
+                idx = seqs[i].index(self.vocab.eos_token)
+                seqs[i] = seqs[i][:idx]
+                seqs[i] = ''.join(seqs[i])
+            except:
+                seqs[i] = None
+
+        return seqs
