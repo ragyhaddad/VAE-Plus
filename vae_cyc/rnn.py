@@ -11,7 +11,7 @@ class VAE(pl.LightningModule):
         num_layers, 
         vocab, 
         bidirectional=True,
-        word_dropout=0.5,lr=0.001, 
+        word_dropout=0.1, lr=0.001, 
         t_kl_weight=0.0025, c_step=1000, 
         dropout=0.3, 
         annealing=True, 
@@ -157,7 +157,7 @@ class VAE(pl.LightningModule):
     
     def training_step(self, batch, batch_idx):
         if self.annealing:
-            self.kl_weight = self.kl_anneal_function(self.anneal_function, self.global_step)
+            self.kl_weight = self.kl_anneal_function(self.anneal_function, self.trainer.global_step)
         else:
             self.kl_weight = self.t_kl_weight
         outputs = self.forward(batch)
@@ -195,7 +195,7 @@ class VAE(pl.LightningModule):
         return VAE(**hparams)
     
 
-    def seq_to_latent(self, seq, num_workers=4, add_gaussian=False, batch_size=32):
+    def seq_to_latent(self, seq, num_workers=4, add_gaussian=False, batch_size=32, noise_level=0.5):
         import pandas as pd
         from vae_cyc import Dataset
         from tqdm import tqdm
@@ -215,15 +215,16 @@ class VAE(pl.LightningModule):
                 h = self.resize_hidden_encoder(h, with_bos.size(0))
                 mu = self.mu_fc(h)
                 if add_gaussian:
-                    z = torch.normal(0,1, size=mu.size()).to(device)
-                    std = torch.exp(0.5 * self.logvar_fc(h))
-                    z = mu + std * z
+                    z = torch.normal(0,noise_level, size=mu.size()).to(device)
+                    # std = torch.exp(0.5 * self.logvar_fc(h))
+                    # z = mu + std * z
+                    z = mu + z
                 else:
                     z = mu
                 out.append(z)
         return torch.cat(out, dim=0)
     
-    def latent_to_seq_batched(self, z_batch, total=1, max_len=300, argmax=True, return_prob=False, num_workers=4, batch_size=32):
+    def latent_to_seq_batched(self, z_batch, total=1, max_len=100, argmax=True, return_prob=False, num_workers=4, batch_size=32):
         import pandas as pd
         import torch.nn.functional as F
         from vae_cyc import Dataset
@@ -277,3 +278,27 @@ class VAE(pl.LightningModule):
                 seqs[i] = None
 
         return seqs
+    
+    def multinomial_generation_batched(self, total, max_len=100, batch_size=256):
+        all_generated = [] 
+        total_generated = 0 
+        for _ in range(total // batch_size):
+            print('batch: ', _)
+            latents = torch.randn(batch_size, self.latent_size).to(self.device)
+            generated = self.latent_to_seq_batched(latents, total=max_len)
+            all_generated.extend(generated)
+            total_generated += batch_size
+            print('Total generated: ', total_generated)
+        return all_generated
+    
+
+    def multinomial_reconstruction(self, seqs, num_workers=4, add_gaussian=False, batch_size=32, noise_level=0.5):
+        import pandas as pd
+        from vae_cyc import Dataset
+        from tqdm import tqdm
+        self.eval()
+        # tokenize the input sequences in batch
+        latents = self.seq_to_latent(seqs, num_workers=num_workers, add_gaussian=add_gaussian, batch_size=batch_size, noise_level=noise_level)
+        # reconstruct the sequences
+        reconstructed = self.latent_to_seq_batched(latents, total=1)
+        return reconstructed
