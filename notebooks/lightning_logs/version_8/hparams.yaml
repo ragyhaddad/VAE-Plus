@@ -1,0 +1,84 @@
+annealing: true
+bidirectional: true
+c_step: 1000
+dropout: 0.3
+emb_dim: 32
+enc_num_layers: 2
+hidden_dim: 32
+kl_weight: 0.2
+latent_size: 32
+lr: 0.001
+max_kl_weight: 1.0
+n_cycles_anneal: 20
+num_layers: 2
+t_kl_weight: 0.0025
+vocab: !!python/object:protgen.vocab.Vocab
+  char2idx:
+    <eos>: 1
+    <pad>: 2
+    <sos>: 0
+    <unk>: 3
+    A: 6
+    B: 25
+    C: 23
+    D: 9
+    E: 21
+    F: 16
+    G: 12
+    H: 20
+    I: 17
+    K: 7
+    L: 15
+    M: 4
+    N: 5
+    P: 18
+    Q: 11
+    R: 14
+    S: 19
+    T: 10
+    U: 27
+    V: 13
+    W: 22
+    X: 24
+    Y: 8
+    Z: 26
+  eos_token: <eos>
+  idx2char:
+    0: <sos>
+    1: <eos>
+    2: <pad>
+    3: <unk>
+    4: M
+    5: N
+    6: A
+    7: K
+    8: Y
+    9: D
+    10: T
+    11: Q
+    12: G
+    13: V
+    14: R
+    15: L
+    16: F
+    17: I
+    18: P
+    19: S
+    20: H
+    21: E
+    22: W
+    23: C
+    24: X
+    25: B
+    26: Z
+    27: U
+  pad_token: <pad>
+  sos_token: <sos>
+  special_tokens:
+  - <sos>
+  - <eos>
+  - <pad>
+  - <unk>
+  target_col: Sequence
+  unk_token: <unk>
+word_dropout: 0.5

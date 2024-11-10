@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"] 
+build-backend = "hatchling.build"
+
+[project]
+name = "vae-cyc"
+version = "0.0.1"
+authors = [{"name"="Ragy Haddad", email="haddadragy@gmail.com"}]
+description = "Protein VAE" 
+requires-python = ">=3.7"
+
+dependencies = ["torch", "lightning", "numpy","pandas", "tqdm", "matplotlib", "biopython"]
+
+
+
