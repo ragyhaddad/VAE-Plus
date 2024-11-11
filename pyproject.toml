@@ -9,7 +9,7 @@ authors = [{"name"="Ragy Haddad", email="haddadragy@gmail.com"}]
 description = "Protein VAE" 
 requires-python = ">=3.7"
 
-dependencies = ["torch", "lightning", "numpy","pandas", "tqdm", "matplotlib", "biopython"]
+dependencies = ["torch", "lightning", "numpy","pandas", "tqdm", "matplotlib", "biopython","wandb", "scikit-learn"]
 
 
 
