@@ -53,8 +53,9 @@ class Vocab:
                     i += 1
 
 class AminoAcidVocab(Vocab):
-    def __init__(self, df, target_col):
+    def __init__(self, df=None, target_col=None):
         super().__init__(df, target_col)
+        self.build_vocab(df=df)
     
     ## Set up the vocab with all 20 known AAs and special tokens
     def build_vocab(self, df):
@@ -63,7 +64,7 @@ class AminoAcidVocab(Vocab):
             self.char2idx[c] = i
             self.idx2char[i] = c
             i += 1
-        for aa in 'ACDEFGHIKLMNPQRSTVWY':
+        for aa in 'ACDEFGHIKLMNPQRSTVWYXUZBO':
             self.char2idx[aa] = i
             self.idx2char[i] = aa
             i += 1

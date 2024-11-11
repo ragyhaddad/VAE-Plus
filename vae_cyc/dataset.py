@@ -3,7 +3,6 @@ from .vocab import Vocab
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, df, vocab, target_col, max_len, verbose=True):
-        self.df = df
         self.vocab = vocab
         self.target_col = target_col
         self.max_len = max_len

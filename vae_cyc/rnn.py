@@ -275,7 +275,7 @@ class VAE(pl.LightningModule):
                 seqs[i] = seqs[i][:idx]
                 seqs[i] = ''.join(seqs[i])
             except:
-                seqs[i] = None
+                seqs[i] = ''.join(seqs[i])
 
         return seqs
     
