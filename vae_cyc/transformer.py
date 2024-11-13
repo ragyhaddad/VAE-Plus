@@ -3,11 +3,36 @@ import pytorch_lightning as pl
 import torch.nn.functional as F
 import pandas as pd
 import wandb
-import datamol as dm
 from torch import nn
-
 from pytorch_lightning.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint 
+
+# def generate(m, vocab, max_len=100):
+#     current_tokens = [m.vocab.char2idx[m.vocab.sos_token]]
+#     tgt_tokens = torch.tensor([current_tokens]).long().to(m.device)
+#     s = ""
+#     last_hidden_state = torch.normal(0, 1.0, size=(1, 256)).to(m.device)
+#     resized_latent = m.fc_latent_to_hidden(last_hidden_state) 
+#     resized_latent = resized_latent.unsqueeze(1).repeat(1, 1, 1) 
+#     emb = m.embedding(tgt_tokens) + m.positional_encoding[:, :tgt_tokens.size(1), :]
+#     for i in range(max_len -2 ):
+#         tgt_mask = m.generate_square_subsequent_mask(emb.size(1)).to(emb.device)
+#         decoded = m.decoder(emb, resized_latent, tgt_mask=tgt_mask)
+#         outputs_v = m.output_fc(decoded)
+#         outputs_v = outputs_v[:,-1,:] 
+#         top_char = torch.argmax(outputs_v)
+#         if top_char == vocab.char2idx[vocab.eos_token]:
+#             break
+#         current_tokens.append(top_char.item())
+#         tgt_tokens = torch.tensor([current_tokens]).long().to(m.device)
+#         emb = m.embedding(tgt_tokens) + m.positional_encoding[:, :tgt_tokens.size(1), :]
+        
+#         s += vocab.idx2char[top_char.item()]
+#     s = vocab.reverse_special(s)
+    
+#     if genchem.valid(s):
+#         print(s)
+#     return s
 
 class Transformer(pl.LightningModule):
     def __init__(self, vocab_size, embed_size, latent_dim, num_heads, hidden_dim, num_layers, max_seq_length, vocab):
@@ -39,6 +64,7 @@ class Transformer(pl.LightningModule):
         self.vocab = vocab 
         self.criterion = torch.nn.CrossEntropyLoss(ignore_index=vocab.char2idx[vocab.pad_token], reduction='sum')
         self.kl_weight = 0.6
+        self.save_hyperparameters()
         
 
     def compute_loss(self, outputs, targets, logvar, mu):
@@ -87,13 +113,15 @@ class Transformer(pl.LightningModule):
         resized_latent = resized_latent.unsqueeze(1).repeat(1, self.max_seq_length, 1)
         # add positional encoding to reshaped latents 
         
-        resized_latent = resized_latent + self.positional_encoding[:, :resized_latent.size(1), :] 
+        # resized_latent = resized_latent + self.positional_encoding[:, :resized_latent.size(1), :] 
+        
         # Add positional encoding
         hidden = resized_latent + self.positional_encoding[:, :self.max_seq_length, :]
         tgt_mask = self.generate_square_subsequent_mask(x.size(1)).to(x.device)
         # Pass through decoder
         # decoded = self.decoder(x, hidden, tgt_key_padding_mask=mask, memory_key_padding_mask=mask)
-        decoded = self.decoder(x, hidden, tgt_mask=tgt_mask,tgt_is_causal=True,tgt_key_padding_mask=mask, memory_key_padding_mask=mask)
+        # decoded = self.decoder(x, hidden, tgt_mask=tgt_mask,tgt_is_causal=True,tgt_key_padding_mask=mask, memory_key_padding_mask=mask)
+        decoded = self.decoder(x, hidden, tgt_mask=tgt_mask,tgt_key_padding_mask=mask)
 
         outputs_v = self.output_fc(decoded)
         
@@ -101,9 +129,9 @@ class Transformer(pl.LightningModule):
 
     def forward(self,batch):
         with_bos, with_eos, masks = batch
-        last_hidden_states, memory, logvar, mu = m.encode(with_bos, mask=masks)
+        last_hidden_states, memory, logvar, mu = self.encode(with_bos, mask=masks)
         z = self.reparameterize(mu, logvar)
-        output_v = m.decode(z, memory, mask=masks)
+        output_v = self.decode(z, memory, mask=masks)
         return output_v, with_eos, logvar, mu
 
     def configure_optimizers(self):
@@ -112,16 +140,27 @@ class Transformer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         outputs_v, with_eos, logvar, mu = self.forward(batch)
         r_loss, kl_loss = self.compute_loss(outputs_v, with_eos, logvar, mu)
-        # recon_loss = self.criterion(outputs_v.view(-1, outputs_v.size(-1)), with_eos.view(-1))
-        # self.kl_weight = self.cyclical_annealing(20000, 500, step=self.global_step, max_kl_weight=1.0)
-        self.kl_weight = 0.8
+        self.kl_weight = self.cyclical_annealing(100000, 100, step=self.global_step, max_kl_weight=0.6)
         r = {}
         r['r_loss'] = r_loss 
         r['kl_loss'] = kl_loss
         r['loss'] = r_loss + kl_loss
         r['kl_weight'] = self.kl_weight
-        # self.log(r)
         for key in r:
             self.log(key, r[key])
-
         return r
+    
+    def validation_step(self, batch, batch_idx):
+        outputs_v, with_eos, logvar, mu = self.forward(batch)
+        r_loss, kl_loss = self.compute_loss(outputs_v, with_eos, logvar, mu)
+        r = {}
+        r['r_loss'] = r_loss 
+        r['kl_loss'] = kl_loss
+        r['loss'] = r_loss + kl_loss
+        for key in r:
+            self.log(f'val_{key}', r[key])
+        return r
+    
+
+        
+        

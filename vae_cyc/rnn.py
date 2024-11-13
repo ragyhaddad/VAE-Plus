@@ -15,7 +15,8 @@ class VAE(pl.LightningModule):
         t_kl_weight=0.0025, c_step=1000, 
         dropout=0.3, 
         annealing=True, 
-        emb_dim=32, enc_num_layers=2, 
+        emb_dim=32, 
+        enc_num_layers=2, 
         kl_weight=0.2,
         max_kl_weight=1.0,
         n_cycles_anneal=20):
@@ -130,7 +131,7 @@ class VAE(pl.LightningModule):
 
         z = torch.normal(0,1, size=mu.size()).to(self.device)
         std = torch.exp(0.5 * logvar)
-        z = mu + std * z
+        z = z * std + mu
         return z, mu, logvar 
     
     def dec_forward(self, x, z, lengths):
@@ -141,7 +142,6 @@ class VAE(pl.LightningModule):
         x_input = torch.cat([e, z_0], dim=-1)
         lengths = torch.tensor(lengths).cpu().numpy()
         packed_input = pack_padded_sequence(x_input, lengths, batch_first=True, enforce_sorted=False)
-
         h = self.latent2hidden(z)
         h = self.resize_hidden_decoder(h, batch_size)
         outputs, _ = self.decoder(packed_input, h)

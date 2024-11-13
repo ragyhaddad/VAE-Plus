@@ -52,3 +52,31 @@ class Dataset(torch.utils.data.Dataset):
             self.tokens.append(tokens)
         if self.verbose:
             print('Tokenization complete')
+
+class TransformerDataset:
+    def __init__(self, sequences, vocab, max_len=100):
+        self.sequences = sequences
+        self.vocab = vocab 
+        self.max_len = max_len 
+    
+    def __len__(self):
+        return len(self.sequences)
+
+    def __getitem__(self, idx):
+        seq = self.sequences[idx]
+        seq = self.vocab.handle_special(seq)
+        tokens = [self.vocab.char2idx[i] for i in seq]
+        
+        with_bos = [self.vocab.char2idx[self.vocab.sos_token]] + tokens
+        with_eos = tokens + [self.vocab.char2idx[self.vocab.eos_token]]
+        with_bos += [self.vocab.char2idx[self.vocab.pad_token]] * (self.max_len - len(with_bos))
+        with_eos += [self.vocab.char2idx[self.vocab.pad_token]] * (self.max_len - len(with_eos))
+        attention_mask = [1 if t != self.vocab.char2idx[self.vocab.pad_token] else 0 for t in with_bos]
+        return torch.tensor(with_bos), torch.tensor(with_eos), torch.tensor(attention_mask).float()
+
+    def collate(self, batch):
+        with_bos, with_eos, masks = zip(*batch)
+        with_bos = torch.stack(with_bos) 
+        with_eos = torch.stack(with_eos)
+        masks = torch.stack(masks)
+        return with_bos, with_eos, masks
