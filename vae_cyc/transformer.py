@@ -2,37 +2,39 @@ import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
 import pandas as pd
+import torch.utils
+import torch.utils.data
 import wandb
 from torch import nn
 from pytorch_lightning.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint 
 
-# def generate(m, vocab, max_len=100):
-#     current_tokens = [m.vocab.char2idx[m.vocab.sos_token]]
-#     tgt_tokens = torch.tensor([current_tokens]).long().to(m.device)
-#     s = ""
-#     last_hidden_state = torch.normal(0, 1.0, size=(1, 256)).to(m.device)
-#     resized_latent = m.fc_latent_to_hidden(last_hidden_state) 
-#     resized_latent = resized_latent.unsqueeze(1).repeat(1, 1, 1) 
-#     emb = m.embedding(tgt_tokens) + m.positional_encoding[:, :tgt_tokens.size(1), :]
-#     for i in range(max_len -2 ):
-#         tgt_mask = m.generate_square_subsequent_mask(emb.size(1)).to(emb.device)
-#         decoded = m.decoder(emb, resized_latent, tgt_mask=tgt_mask)
-#         outputs_v = m.output_fc(decoded)
-#         outputs_v = outputs_v[:,-1,:] 
-#         top_char = torch.argmax(outputs_v)
-#         if top_char == vocab.char2idx[vocab.eos_token]:
-#             break
-#         current_tokens.append(top_char.item())
-#         tgt_tokens = torch.tensor([current_tokens]).long().to(m.device)
-#         emb = m.embedding(tgt_tokens) + m.positional_encoding[:, :tgt_tokens.size(1), :]
+def generate(m, vocab, max_len=100):
+    current_tokens = [m.vocab.char2idx[m.vocab.sos_token]]
+    tgt_tokens = torch.tensor([current_tokens]).long().to(m.device)
+    s = ""
+    last_hidden_state = torch.normal(0, 1.0, size=(1, 256)).to(m.device)
+    resized_latent = m.fc_latent_to_hidden(last_hidden_state) 
+    resized_latent = resized_latent.unsqueeze(1).repeat(1, 1, 1) 
+    emb = m.embedding(tgt_tokens) + m.positional_encoding[:, :tgt_tokens.size(1), :]
+    for i in range(max_len -2 ):
+        tgt_mask = m.generate_square_subsequent_mask(emb.size(1)).to(emb.device)
+        decoded = m.decoder(emb, resized_latent, tgt_mask=tgt_mask)
+        outputs_v = m.output_fc(decoded)
+        outputs_v = outputs_v[:,-1,:] 
+        top_char = torch.argmax(outputs_v)
+        if top_char == vocab.char2idx[vocab.eos_token]:
+            break
+        current_tokens.append(top_char.item())
+        tgt_tokens = torch.tensor([current_tokens]).long().to(m.device)
+        emb = m.embedding(tgt_tokens) + m.positional_encoding[:, :tgt_tokens.size(1), :]
         
-#         s += vocab.idx2char[top_char.item()]
-#     s = vocab.reverse_special(s)
+        s += vocab.idx2char[top_char.item()]
+    s = vocab.reverse_special(s)
     
-#     if genchem.valid(s):
-#         print(s)
-#     return s
+    if genchem.valid(s):
+        print(s)
+    return s
 
 class Transformer(pl.LightningModule):
     def __init__(self, vocab_size, embed_size, latent_dim, num_heads, hidden_dim, num_layers, max_seq_length, vocab):
@@ -147,7 +149,7 @@ class Transformer(pl.LightningModule):
         r['loss'] = r_loss + kl_loss
         r['kl_weight'] = self.kl_weight
         for key in r:
-            self.log(key, r[key])
+            self.log(f'train_{key}', r[key])
         return r
     
     def validation_step(self, batch, batch_idx):
@@ -160,6 +162,35 @@ class Transformer(pl.LightningModule):
         for key in r:
             self.log(f'val_{key}', r[key])
         return r
+
+
+    def smiles_to_latent(self, smiles):
+        ds = TransformerDataset(smiles, self.vocab, max_len=self.max_seq_length)
+        dl = torch.utils.data.DataLoader(ds, batch_size=1, collate_fn=ds.collate)
+        latents = []
+        with torch.no_grad():
+            for batch in dl:
+                with_bos, with_eos, masks = batch
+                print(with_bos.shape)
+                _, memory, logvar, mu = self.encode(with_bos.to(self.device), mask=masks.to(self.device))
+                latents.append(mu)
+        
+        latents = torch.cat(latents, dim=0)
+        return latents
+
+    
+    def multinomial_generation(self, total=1):
+        latents = torch.normal(0, 1.0, size=(total, self.latent_dim)).to(self.device)
+        resized_latent = self.fc_latent_to_hidden(latents)
+        resized_latent = resized_latent.unsqueeze(1).repeat(1, self.max_seq_length, 1)
+        # add positional encoding to reshaped latents
+        resized_latent = resized_latent + self.positional_encoding[:, :resized_latent.size(1), :]
+        hidden = resized_latent + self.positional_encoding[:, :self.max_seq_length, :]
+        tgt_mask = self.generate_square_subsequent_mask(self.max_seq_length).to(latents.device)
+        decoded = self.decoder(torch.zeros(total, self.max_seq_length).long().to(self.device), hidden, tgt_mask=tgt_mask)
+        outputs_v = self.output_fc(decoded)
+        return outputs_v
+
     
 
         
