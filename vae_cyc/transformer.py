@@ -1,109 +1,127 @@
 import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
-import pandas as pd
-import torch.utils
-import torch.utils.data
-import wandb
 from torch import nn
-from pytorch_lightning.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint 
-from .dataset import TransformerDataset
 
 
 class Transformer(pl.LightningModule):
-    def __init__(self, vocab_size, embed_size, latent_dim, num_heads, hidden_dim, num_layers, max_seq_length, vocab):
+    def __init__(
+        self,
+        vocab_size,
+        embed_size,
+        latent_dim,
+        num_heads,
+        hidden_dim,
+        num_layers,
+        max_seq_length,
+        vocab,
+    ):
         super().__init__()
         self.latent_dim = latent_dim
         self.max_seq_length = max_seq_length
-        
+
         # Embedding layer
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        
+
         # Positional encoding
-        self.positional_encoding = nn.Parameter(torch.zeros(1, max_seq_length, embed_size))
-        
+        self.positional_encoding = nn.Parameter(
+            torch.zeros(1, max_seq_length, embed_size)
+        )
+
         # Transformer Encoder
-        encoder_layer = nn.TransformerEncoderLayer(embed_size, num_heads, hidden_dim, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(
+            embed_size, num_heads, hidden_dim, batch_first=True
+        )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
-        
+
         # Latent space
         self.fc_mu = nn.Linear(embed_size, latent_dim)
         self.fc_logvar = nn.Linear(embed_size, latent_dim)
         self.fc_latent_to_hidden = nn.Linear(latent_dim, embed_size)
-        
+
         # Transformer Decoder
-        decoder_layer = nn.TransformerDecoderLayer(embed_size, num_heads, hidden_dim, batch_first=True)
+        decoder_layer = nn.TransformerDecoderLayer(
+            embed_size, num_heads, hidden_dim, batch_first=True
+        )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers)
 
         # Output projection
         self.output_fc = nn.Linear(embed_size, vocab_size)
-        self.vocab = vocab 
-        self.criterion = torch.nn.CrossEntropyLoss(ignore_index=vocab.char2idx[vocab.pad_token], reduction='sum')
+        self.vocab = vocab
+        self.criterion = torch.nn.CrossEntropyLoss(
+            ignore_index=vocab.char2idx[vocab.pad_token], reduction="sum"
+        )
         self.kl_weight = 0.6
         self.save_hyperparameters()
-        
 
     def compute_loss(self, outputs, targets, logvar, mu):
         r_loss = self.criterion(outputs.view(-1, outputs.size(-1)), targets.view(-1))
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         kl_loss = kl_loss * self.kl_weight
         return r_loss, kl_loss
-    
-    def cyclical_annealing(self,T,M,step,R=0.4, max_kl_weight=1):
+
+    def cyclical_annealing(self, T, M, step, R=0.4, max_kl_weight=1):
         """
         Implementing: <https://arxiv.org/abs/1903.10145>
-        T = Total steps 
-        M = Number of cycles 
+        T = Total steps
+        M = Number of cycles
         R = Proportion used to increase beta
-        t = Global step 
+        t = Global step
         """
-        period = (T/M) # N_iters/N_cycles 
+        period = T / M  # N_iters/N_cycles
         internal_period = (step) % (period)  # Itteration_number/(Global Period)
-        tau = internal_period/period
+        tau = internal_period / period
         if tau > R:
             tau = max_kl_weight
         else:
-            tau = min(max_kl_weight, tau/R) # Linear function 
+            tau = min(max_kl_weight, tau / R)  # Linear function
         return tau
-    
+
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
-    
+
     def generate_square_subsequent_mask(self, sz):
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        mask = (
+            mask.float()
+            .masked_fill(mask == 0, float("-inf"))
+            .masked_fill(mask == 1, float(0.0))
+        )
         return mask
-    
+
     def encode(self, x, mask=None):
-        emb = self.embedding(x) + self.positional_encoding[:, :x.size(1), :]
+        emb = self.embedding(x) + self.positional_encoding[:, : x.size(1), :]
         encoded = self.encoder(emb, src_key_padding_mask=mask)
-        last_hidden_state = encoded[:, -1, :] # z latent is the last hidden state of the encoded sequence
+        last_hidden_state = encoded[
+            :, -1, :
+        ]  # z latent is the last hidden state of the encoded sequence
         mu_vector = self.fc_mu(last_hidden_state)
         logvar_vector = self.fc_logvar(last_hidden_state)
         return last_hidden_state, emb, logvar_vector, mu_vector
-    
+
     def resize_latent_to_memory(self, last_hidden_state, length):
         resized_latent = last_hidden_state.unsqueeze(1).repeat(1, length, 1)
         return resized_latent
-    
+
     def decode(self, z, tgt, mask=None):
         z = self.fc_latent_to_hidden(z)
         z = self.resize_latent_to_memory(z, self.max_seq_length)
-        memory = z + self.positional_encoding[:, :self.max_seq_length, :]
+        memory = z + self.positional_encoding[:, : self.max_seq_length, :]
 
         # Autoregressive training - This allows the model to generate the next token in the sequence without seeing the future tokens.
         tgt_mask = self.generate_square_subsequent_mask(tgt.size(1)).to(tgt.device)
-        
-        decoded = self.decoder(tgt, memory, tgt_mask=tgt_mask,tgt_key_padding_mask=mask)
 
-        outputs_v = self.output_fc(decoded) # Output logits
-        
+        decoded = self.decoder(
+            tgt, memory, tgt_mask=tgt_mask, tgt_key_padding_mask=mask
+        )
+
+        outputs_v = self.output_fc(decoded)  # Output logits
+
         return outputs_v
 
-    def forward(self,batch):
+    def forward(self, batch):
         with_bos, with_eos, masks = batch
         last_hidden_state, memory, logvar, mu = self.encode(with_bos, mask=masks)
         z = self.reparameterize(mu, logvar)
@@ -111,33 +129,37 @@ class Transformer(pl.LightningModule):
         return output_v, with_eos, logvar, mu
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=0.0001) 
+        return torch.optim.Adam(self.parameters(), lr=0.0001)
 
     def training_step(self, batch, batch_idx):
         outputs_v, with_eos, logvar, mu = self.forward(batch)
         r_loss, kl_loss = self.compute_loss(outputs_v, with_eos, logvar, mu)
-        self.kl_weight = self.cyclical_annealing(100000, 100, step=self.global_step, max_kl_weight=0.6)
+        self.kl_weight = self.cyclical_annealing(
+            100000, 100, step=self.global_step, max_kl_weight=0.6
+        )
         r = {}
-        r['r_loss'] = r_loss 
-        r['kl_loss'] = kl_loss
-        r['loss'] = r_loss + kl_loss
-        r['kl_weight'] = self.kl_weight
+        r["r_loss"] = r_loss
+        r["kl_loss"] = kl_loss
+        r["loss"] = r_loss + kl_loss
+        r["kl_weight"] = self.kl_weight
         for key in r:
-            self.log(f'train_{key}', r[key])
+            self.log(f"train_{key}", r[key])
         return r
-    
+
     def validation_step(self, batch, batch_idx):
         outputs_v, with_eos, logvar, mu = self.forward(batch)
         r_loss, kl_loss = self.compute_loss(outputs_v, with_eos, logvar, mu)
         r = {}
-        r['r_loss'] = r_loss 
-        r['kl_loss'] = kl_loss
-        r['loss'] = r_loss + kl_loss
+        r["r_loss"] = r_loss
+        r["kl_loss"] = kl_loss
+        r["loss"] = r_loss + kl_loss
         for key in r:
-            self.log(f'val_{key}', r[key])
+            self.log(f"val_{key}", r[key])
         return r
-    
+
     def smiles_to_latent(self, smiles):
+        from genchem import TransformerDataset
+
         ds = TransformerDataset(smiles, self.vocab, max_len=self.max_seq_length)
         dl = torch.utils.data.DataLoader(ds, batch_size=1, collate_fn=ds.collate)
 
@@ -145,10 +167,10 @@ class Transformer(pl.LightningModule):
         with torch.no_grad():
             for batch in dl:
                 with_bos, _, masks = batch
-                
+
                 _, _, logvar, mu = self.encode(with_bos.to(self.device), mask=None)
                 latents.append(mu)
-        
+
         latents = torch.cat(latents, dim=0)
         return latents
 
@@ -157,14 +179,17 @@ class Transformer(pl.LightningModule):
         resized_latent = self.fc_latent_to_hidden(latents)
         resized_latent = resized_latent.unsqueeze(1).repeat(1, self.max_seq_length, 1)
         # add positional encoding to reshaped latents
-        resized_latent = resized_latent + self.positional_encoding[:, :resized_latent.size(1), :]
-        hidden = resized_latent + self.positional_encoding[:, :self.max_seq_length, :]
-        tgt_mask = self.generate_square_subsequent_mask(self.max_seq_length).to(latents.device)
-        decoded = self.decoder(torch.zeros(total, self.max_seq_length).long().to(self.device), hidden, tgt_mask=tgt_mask)
+        resized_latent = (
+            resized_latent + self.positional_encoding[:, : resized_latent.size(1), :]
+        )
+        hidden = resized_latent + self.positional_encoding[:, : self.max_seq_length, :]
+        tgt_mask = self.generate_square_subsequent_mask(self.max_seq_length).to(
+            latents.device
+        )
+        decoded = self.decoder(
+            torch.zeros(total, self.max_seq_length).long().to(self.device),
+            hidden,
+            tgt_mask=tgt_mask,
+        )
         outputs_v = self.output_fc(decoded)
         return outputs_v
-
-    
-
-        
-        
