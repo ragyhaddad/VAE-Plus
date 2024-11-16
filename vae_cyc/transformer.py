@@ -4,6 +4,16 @@ import torch.nn.functional as F
 from torch import nn
 
 
+class TransformerWithLearnablePositionalEncoding(nn.Module):
+    def __init__(self, max_len, d_model):
+        super().__init__()
+        self.embedding = nn.Embedding(max_len, d_model)
+
+    def forward(self, x):
+        seq_len = x.size(1)
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        return self.embedding(positions)
+
 class Transformer(pl.LightningModule):
     def __init__(
         self,
@@ -23,15 +33,18 @@ class Transformer(pl.LightningModule):
         # Embedding layer
         self.embedding = nn.Embedding(vocab_size, embed_size)
 
-        # Positional encoding
-        self.positional_encoding = nn.Parameter(
-            torch.zeros(1, max_seq_length, embed_size)
-        )
+        # Learnable Positional encoding
+        # self.positional_encoding = nn.Parameter(
+        #     torch.zeros(1, max_seq_length, embed_size)
+        # )
+        print('here')
+        self.positional_encoding = TransformerWithLearnablePositionalEncoding(max_seq_length, embed_size)
 
         # Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(
             embed_size, num_heads, hidden_dim, batch_first=True
         )
+
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
 
         # Latent space
@@ -43,6 +56,7 @@ class Transformer(pl.LightningModule):
         decoder_layer = nn.TransformerDecoderLayer(
             embed_size, num_heads, hidden_dim, batch_first=True
         )
+        
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers)
 
         # Output projection
@@ -92,7 +106,8 @@ class Transformer(pl.LightningModule):
         return mask
 
     def encode(self, x, mask=None):
-        emb = self.embedding(x) + self.positional_encoding[:, : x.size(1), :]
+        # emb = self.embedding(x) + self.positional_encoding[:, : x.size(1), :]
+        emb = self.embedding(x) + self.positional_encoding(x)
         encoded = self.encoder(emb, src_key_padding_mask=mask)
         last_hidden_state = encoded[
             :, -1, :
@@ -107,8 +122,9 @@ class Transformer(pl.LightningModule):
 
     def decode(self, z, tgt, mask=None):
         z = self.fc_latent_to_hidden(z)
-        z = self.resize_latent_to_memory(z, self.max_seq_length)
-        memory = z + self.positional_encoding[:, : self.max_seq_length, :]
+        z = self.resize_latent_to_memory(z, tgt.size(1))
+        # memory = z + self.positional_encoding[:, : tgt.size(1), :]
+        memory = z + self.positional_encoding(tgt)
 
         # Autoregressive training - This allows the model to generate the next token in the sequence without seeing the future tokens.
         tgt_mask = self.generate_square_subsequent_mask(tgt.size(1)).to(tgt.device)
@@ -167,29 +183,30 @@ class Transformer(pl.LightningModule):
         with torch.no_grad():
             for batch in dl:
                 with_bos, _, masks = batch
-
                 _, _, logvar, mu = self.encode(with_bos.to(self.device), mask=None)
                 latents.append(mu)
-
         latents = torch.cat(latents, dim=0)
         return latents
 
-    def multinomial_generation(self, total=1):
-        latents = torch.normal(0, 1.0, size=(total, self.latent_dim)).to(self.device)
-        resized_latent = self.fc_latent_to_hidden(latents)
-        resized_latent = resized_latent.unsqueeze(1).repeat(1, self.max_seq_length, 1)
-        # add positional encoding to reshaped latents
-        resized_latent = (
-            resized_latent + self.positional_encoding[:, : resized_latent.size(1), :]
-        )
-        hidden = resized_latent + self.positional_encoding[:, : self.max_seq_length, :]
-        tgt_mask = self.generate_square_subsequent_mask(self.max_seq_length).to(
-            latents.device
-        )
-        decoded = self.decoder(
-            torch.zeros(total, self.max_seq_length).long().to(self.device),
-            hidden,
-            tgt_mask=tgt_mask,
-        )
-        outputs_v = self.output_fc(decoded)
-        return outputs_v
+    def generate(self, num_samples=1):
+        current_tokens = [self.vocab.char2idx[self.vocab.sos_token]]
+        tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
+        s = ""
+        last_hidden_state = torch.normal(0, 1.0, size=(1, self.latent_dim)).to(self.device)
+        last_hidden_state = self.fc_latent_to_hidden(last_hidden_state)
+        memory = self.resize_latent_to_memory(last_hidden_state, 1)
+        emb = self.embedding(tgt_tokens) + self.positional_encoding(tgt_tokens)
+        
+        for i in range(self.max_seq_length):
+            tgt_mask = self.generate_square_subsequent_mask(emb.size(1)).to(emb.device)
+            decoded = self.decoder(emb, memory, tgt_mask=tgt_mask)
+            output_v = self.output_fc(decoded)
+            output_v = output_v[:, -1, :]
+            top_char = torch.argmax(output_v)
+            if top_char == self.vocab.eos_idx:
+                break 
+            current_tokens.append(top_char.item())
+            tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
+            emb = self.embedding(tgt_tokens) + self.positional_encoding(tgt_tokens)
+            s += self.vocab.idx2char[top_char.item()]
+        return s
