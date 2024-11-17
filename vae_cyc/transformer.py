@@ -1,7 +1,27 @@
 import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
+import math
 from torch import nn
+
+class PositionalEncoding(torch.nn.Module):
+    def __init__(self, d_model, max_seq_len):
+        super().__init__()
+        self.d_model = d_model
+        self.max_seq_len = max_seq_len
+
+        # Create the positional encoding matrix
+        pe = torch.zeros(max_seq_len, d_model)
+        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)  # Apply sin to even indices
+        pe[:, 1::2] = torch.cos(position * div_term)  # Apply cos to odd indices
+        self.register_buffer('pe', pe.unsqueeze(0))  # Shape: (1, max_seq_len, d_model)
+
+    def forward(self, x):
+        # x: (batch_size, seq_len, d_model)
+        seq_len = x.size(1)
+        return self.pe[:, :seq_len, :]
 
 
 class TransformerWithLearnablePositionalEncoding(nn.Module):
@@ -25,20 +45,19 @@ class Transformer(pl.LightningModule):
         num_layers,
         max_seq_length,
         vocab,
+        total_steps_annealing=100000,
+        num_cycles=100,
+
     ):
         super().__init__()
+        
         self.latent_dim = latent_dim
         self.max_seq_length = max_seq_length
 
         # Embedding layer
         self.embedding = nn.Embedding(vocab_size, embed_size)
 
-        # Learnable Positional encoding
-        # self.positional_encoding = nn.Parameter(
-        #     torch.zeros(1, max_seq_length, embed_size)
-        # )
-        print('here')
-        self.positional_encoding = TransformerWithLearnablePositionalEncoding(max_seq_length, embed_size)
+        self.positional_encoding = PositionalEncoding(embed_size, max_seq_len   =max_seq_length)
 
         # Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -66,6 +85,8 @@ class Transformer(pl.LightningModule):
             ignore_index=vocab.char2idx[vocab.pad_token], reduction="sum"
         )
         self.kl_weight = 0.6
+        self.total_steps_annealing = total_steps_annealing
+        self.num_cycles = num_cycles
         self.save_hyperparameters()
 
     def compute_loss(self, outputs, targets, logvar, mu):
@@ -151,7 +172,7 @@ class Transformer(pl.LightningModule):
         outputs_v, with_eos, logvar, mu = self.forward(batch)
         r_loss, kl_loss = self.compute_loss(outputs_v, with_eos, logvar, mu)
         self.kl_weight = self.cyclical_annealing(
-            100000, 100, step=self.global_step, max_kl_weight=0.6
+            self.total_steps_annealing, self.num_cycles, step=self.global_step, max_kl_weight=0.6
         )
         r = {}
         r["r_loss"] = r_loss
@@ -197,7 +218,7 @@ class Transformer(pl.LightningModule):
         memory = self.resize_latent_to_memory(last_hidden_state, 1)
         emb = self.embedding(tgt_tokens) + self.positional_encoding(tgt_tokens)
         
-        for i in range(self.max_seq_length):
+        for i in range(self.max_seq_length - 1):
             tgt_mask = self.generate_square_subsequent_mask(emb.size(1)).to(emb.device)
             decoded = self.decoder(emb, memory, tgt_mask=tgt_mask)
             output_v = self.output_fc(decoded)
@@ -209,4 +230,6 @@ class Transformer(pl.LightningModule):
             tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
             emb = self.embedding(tgt_tokens) + self.positional_encoding(tgt_tokens)
             s += self.vocab.idx2char[top_char.item()]
+        print(s)
         return s
+

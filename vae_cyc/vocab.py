@@ -110,6 +110,20 @@ class Vocab:
                 if m > max_len:
                     max_len = m
             self.max_len = max_len
+    
+    def save(self, file_path):
+        import json
+        with open(file_path,'w') as f:
+            json.dump(self.char2idx, f)
+    
+    @classmethod
+    def load(cls, file_path):
+        import json
+        with open(file_path,'r') as f:
+            char2idx = json.load(f)
+        idx2char = {v:k for k,v in char2idx.items()}
+        return cls(None, None, char2idx, idx2char)
+        
 
 class AtomVocab(Vocab):
     def __init__(self, df, smiles_col, char2idx={}, idx2char={}):
