@@ -130,9 +130,24 @@ class Transformer(pl.LightningModule):
         # emb = self.embedding(x) + self.positional_encoding[:, : x.size(1), :]
         emb = self.embedding(x) + self.positional_encoding(x)
         encoded = self.encoder(emb, src_key_padding_mask=mask)
-        last_hidden_state = encoded[
-            :, -1, :
-        ]  # z latent is the last hidden state of the encoded sequence
+        # masked encodings
+        if mask is not None:
+            # Pooled average 
+            # expanded_mask = mask.unsqueeze(-1).repeat(1, 1, encoded.size(-1))
+            # masked_encodings = (expanded_mask * encoded)
+            # sum_encodings = masked_encodings.sum(dim=1) # sum over the sequence length
+            # non_padded_tokens = mask.sum(dim=1)
+            # last_hidden_state = sum_encodings / non_padded_tokens.unsqueeze(-1)
+
+            last_non_padding_indices = mask.sum(dim=1) - 1  # Shape: (batch_size,)
+            last_non_padding_indices = last_non_padding_indices.long()
+            last_hidden_state = torch.stack(
+                [encoded[i, last_non_padding_indices[i], :] for i in range(encoded.size(0))])
+        else:
+            last_hidden_state = encoded[
+                :, -1, :
+            ]  # z latent is the last hidden state of the encoded sequence (but account for padding) this implementation is not yet doing that
+
         mu_vector = self.fc_mu(last_hidden_state)
         logvar_vector = self.fc_logvar(last_hidden_state)
         return last_hidden_state, emb, logvar_vector, mu_vector
@@ -151,7 +166,7 @@ class Transformer(pl.LightningModule):
         tgt_mask = self.generate_square_subsequent_mask(tgt.size(1)).to(tgt.device)
 
         decoded = self.decoder(
-            tgt, memory, tgt_mask=tgt_mask, tgt_key_padding_mask=mask
+            tgt, memory, tgt_mask=tgt_mask, tgt_key_padding_mask=mask,
         )
 
         outputs_v = self.output_fc(decoded)  # Output logits
@@ -195,9 +210,8 @@ class Transformer(pl.LightningModule):
         return r
 
     def smiles_to_latent(self, smiles):
-        from genchem import TransformerDataset
-
-        ds = TransformerDataset(smiles, self.vocab, max_len=self.max_seq_length)
+        from vae_cyc.dataset import TransformerSMILESDataset
+        ds = TransformerSMILESDataset(smiles, self.vocab, max_len=self.max_seq_length)
         dl = torch.utils.data.DataLoader(ds, batch_size=1, collate_fn=ds.collate)
 
         latents = []
@@ -209,27 +223,31 @@ class Transformer(pl.LightningModule):
         latents = torch.cat(latents, dim=0)
         return latents
 
-    def generate(self, num_samples=1):
+    def generate(self, num_samples=1, smiles=None):
         current_tokens = [self.vocab.char2idx[self.vocab.sos_token]]
         tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
         s = ""
-        last_hidden_state = torch.normal(0, 1.0, size=(1, self.latent_dim)).to(self.device)
+        if smiles is not None:
+            last_hidden_state = self.smiles_to_latent(smiles)
+        else:
+            last_hidden_state = torch.normal(0, 1, size=(1, self.latent_dim)).to(self.device)
         last_hidden_state = self.fc_latent_to_hidden(last_hidden_state)
         memory = self.resize_latent_to_memory(last_hidden_state, 1)
         emb = self.embedding(tgt_tokens) + self.positional_encoding(tgt_tokens)
-        
-        for i in range(self.max_seq_length - 1):
-            tgt_mask = self.generate_square_subsequent_mask(emb.size(1)).to(emb.device)
-            decoded = self.decoder(emb, memory, tgt_mask=tgt_mask)
-            output_v = self.output_fc(decoded)
-            output_v = output_v[:, -1, :]
-            top_char = torch.argmax(output_v)
-            if top_char == self.vocab.eos_idx:
-                break 
-            current_tokens.append(top_char.item())
-            tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
-            emb = self.embedding(tgt_tokens) + self.positional_encoding(tgt_tokens)
-            s += self.vocab.idx2char[top_char.item()]
-        print(s)
+        # print(self.positional_encoding(tgt_tokens).shape)
+        with torch.no_grad():
+            for i in range(self.max_seq_length):
+                tgt_mask = self.generate_square_subsequent_mask(emb.size(1)).to(emb.device)
+                decoded = self.decoder(emb, memory, tgt_mask=tgt_mask)
+                output_v = self.output_fc(decoded)
+                output_v = output_v[:, -1, :]
+                top_char = torch.argmax(output_v)
+                if top_char == self.vocab.eos_idx:
+                    break 
+                current_tokens.append(top_char.item())
+                tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
+                emb = self.embedding(tgt_tokens) + self.positional_encoding(tgt_tokens)
+                s += self.vocab.idx2char[top_char.item()]
+            print(s)
         return s
 

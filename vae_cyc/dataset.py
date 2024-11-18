@@ -86,12 +86,13 @@ class TransformerSMILESDataset:
             tokens = [self.vocab.char2idx[i] for i in seq]
         with_bos = [self.vocab.char2idx[self.vocab.sos_token]] + tokens
         with_eos = tokens + [self.vocab.char2idx[self.vocab.eos_token]]
-        attention_mask = [1 if t != self.vocab.char2idx[self.vocab.pad_token] else 0 for t in with_bos]
-        return torch.tensor(with_bos), torch.tensor(with_eos), torch.tensor(attention_mask).float()
+        
+        return torch.tensor(with_bos), torch.tensor(with_eos)
     
     def collate(self, batch):
-        with_bos, with_eos, masks = zip(*batch)
+        with_bos, with_eos = zip(*batch)
         with_bos = torch.nn.utils.rnn.pad_sequence(with_bos, batch_first=True, padding_value=self.pad_idx)
         with_eos = torch.nn.utils.rnn.pad_sequence(with_eos, batch_first=True, padding_value=self.pad_idx)
-        masks = torch.nn.utils.rnn.pad_sequence(masks, batch_first=True, padding_value=self.pad_idx)
-        return with_bos, with_eos, masks
+        attention_masks = (with_bos != self.pad_idx).float()
+        # masks = torch.nn.utils.rnn.pad_sequence(masks, batch_first=True, padding_value=self.pad_idx)
+        return with_bos, with_eos, attention_masks
