@@ -106,15 +106,16 @@ class Transformer(pl.LightningModule):
         encoded = self.encoder(emb, src_key_padding_mask=mask)
         
         # Improved masking handling
-        # if mask is not None:
-        #     # Use masked mean or use last non-padding token
-        #     lengths = (~mask).sum(dim=1)
-        #     masked_encodings = encoded * (~mask.unsqueeze(-1))
-        #     last_hidden_state = masked_encodings.sum(dim=1) / lengths.unsqueeze(-1)
-        # else:
-        #     last_hidden_state = encoded.mean(dim=1)
+        if mask is not None:
+            # Use masked mean or use last non-padding token
+            mask = mask.bool()
+            lengths = (~mask).sum(dim=1)
+            masked_encodings = encoded * (~mask.unsqueeze(-1))
+            last_hidden_state = masked_encodings.sum(dim=1) / lengths.unsqueeze(-1)
+        else:
+            last_hidden_state = encoded.mean(dim=1)
         # last_hidden_state = encoded.mean(dim=1)
-        last_hidden_state = encoded.mean(dim=1)        
+        # last_hidden_state = encoded.mean(dim=1)        
         mu_vector = self.fc_mu(last_hidden_state)
         logvar_vector = self.fc_logvar(last_hidden_state)
         return last_hidden_state, emb, logvar_vector, mu_vector
@@ -184,6 +185,8 @@ class Transformer(pl.LightningModule):
         with torch.no_grad():
             for batch in dl:
                 with_bos, _, masks = batch
+                print('here')
+                print(masks)
                 _, _, logvar, mu = self.encode(with_bos.to(self.device), mask=None)
                 # _, _, logvar, mu = self.encode(with_bos.to(self.device))
                 latents.append(mu)
@@ -204,7 +207,7 @@ class Transformer(pl.LightningModule):
         z = self.resize_latent_to_memory(z, tgt_tokens.size(1)) 
         
         with torch.no_grad():
-            for i in range(self.max_seq_length - 1):
+            for i in range(self.max_seq_length):
                 tgt_mask = self.generate_square_subsequent_mask(tgt_tokens.size(1)).to(self.device)
                 decoded = self.decoder(tgt_tokens,z, tgt_mask=tgt_mask)
                 output_v = self.output_fc(decoded)
