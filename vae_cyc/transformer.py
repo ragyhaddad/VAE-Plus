@@ -109,16 +109,20 @@ class Transformer(pl.LightningModule):
         # Improved masking handling
         if mask is not None:
             # Use masked mean or use last non-padding token
+            # mask = mask.bool()
+            # lengths = (mask).sum(dim=1)
+            # masked_encodings = encoded * (mask.unsqueeze(-1))
+            # last_hidden_state = masked_encodings.sum(dim=1) / lengths.unsqueeze(-1)
+            
+            # usa last non padding token 
             mask = mask.bool()
             lengths = (mask).sum(dim=1)
-            masked_encodings = encoded * (mask.unsqueeze(-1))
-            last_hidden_state = masked_encodings.sum(dim=1) / lengths.unsqueeze(-1)
-            
+            last_hidden_state = torch.stack([encoded[i, lengths[i] - 1, :] for i in range(encoded.size(0))])
+
         else:
-            last_hidden_state = encoded.mean(dim=1)
-            
-        # last_hidden_state = encoded.mean(dim=1)
-        # last_hidden_state = encoded.mean(dim=1)        
+            # last_hidden_state = encoded.mean(dim=1)
+            last_hidden_state = encoded[:, -1, :]
+              
         mu_vector = self.fc_mu(last_hidden_state)
         logvar_vector = self.fc_logvar(last_hidden_state)
         return last_hidden_state, emb, logvar_vector, mu_vector
