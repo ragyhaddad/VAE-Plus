@@ -91,9 +91,6 @@ class TransformerSMILESDataset:
         with_bos += [self.pad_idx] * (self.max_len - len(with_bos))
         with_eos += [self.pad_idx] * (self.max_len - len(with_eos))
         
-        # if len(with_bos) != self.max_len:
-        #     print(len(with_bos))
-        #     print(with_bos)
         return torch.tensor(with_bos), torch.tensor(with_eos)
     
     def collate(self, batch):
