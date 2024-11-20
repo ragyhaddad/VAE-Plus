@@ -54,7 +54,7 @@ class Dataset(torch.utils.data.Dataset):
             print('Tokenization complete')
 
 class TransformerSMILESDataset:
-    def __init__(self, sequences, vocab, max_len=100, pretokenize=False):
+    def __init__(self, sequences, vocab, max_len=0, pretokenize=False):
         self.sequences = np.array(sequences).astype(np.string_) 
         self.vocab = vocab 
         self.max_len = max_len 
@@ -69,7 +69,7 @@ class TransformerSMILESDataset:
         if self.pretokenize:
             for seq in tqdm(sequences):
                 seq = str(seq, encoding='utf-8')
-                seq = atomwise_tokenizer(seq)
+                seq = self.vocab.encode_special(seq)
                 tokens = [self.vocab.char2idx[i] for i in seq]
                 self.tokens.append(tokens)
     
@@ -82,17 +82,26 @@ class TransformerSMILESDataset:
         else:
             seq = self.sequences[idx]
             seq = str(seq, encoding='utf-8')
-            seq = atomwise_tokenizer(seq)
+            # seq = atomwise_tokenizer(seq)
+            seq = self.vocab.encode_special(seq)
             tokens = [self.vocab.char2idx[i] for i in seq]
-        with_bos = [self.vocab.char2idx[self.vocab.sos_token]] + tokens
+        with_bos = [self.vocab.char2idx[self.vocab.sos_token]] + tokens 
         with_eos = tokens + [self.vocab.char2idx[self.vocab.eos_token]]
         
+        with_bos += [self.pad_idx] * (self.max_len - len(with_bos))
+        with_eos += [self.pad_idx] * (self.max_len - len(with_eos))
+        
+        # if len(with_bos) != self.max_len:
+        #     print(len(with_bos))
+        #     print(with_bos)
         return torch.tensor(with_bos), torch.tensor(with_eos)
     
     def collate(self, batch):
         with_bos, with_eos = zip(*batch)
-        with_bos = torch.nn.utils.rnn.pad_sequence(with_bos, batch_first=True, padding_value=self.pad_idx)
-        with_eos = torch.nn.utils.rnn.pad_sequence(with_eos, batch_first=True, padding_value=self.pad_idx)
+        with_bos = torch.stack(with_bos) 
+        with_eos = torch.stack(with_eos)
+        # with_bos = torch.nn.utils.rnn.pad_sequence(with_bos, batch_first=True, padding_value=self.pad_idx)
+        # with_eos = torch.nn.utils.rnn.pad_sequence(with_eos, batch_first=True, padding_value=self.pad_idx)
         attention_masks = (with_bos != self.pad_idx).float()
         # masks = torch.nn.utils.rnn.pad_sequence(masks, batch_first=True, padding_value=self.pad_idx)
         return with_bos, with_eos, attention_masks

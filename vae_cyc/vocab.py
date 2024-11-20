@@ -79,12 +79,12 @@ class Vocab:
         from tqdm import tqdm
 
         print('extracting charset..')
-        i = 0
+        step = 0
         for c in self.special_tokens:
             if c not in self.char2idx:
-                self.char2idx[c] = i
-                self.idx2char[i] = c
-                i += 1
+                self.char2idx[c] = step
+                self.idx2char[step] = c
+                step += 1
         all_smi = df[self.smiles_col].values.flatten()
         lengths = []
         for _, smi in enumerate(tqdm(all_smi)):
@@ -92,24 +92,14 @@ class Vocab:
             smi = smi.replace('Br', 'W')
             smi = smi.replace('[nH]', 'X')
             smi = smi.replace('[H]', 'Y')
-
+            
             lengths.append(len(smi))
 
             for c in smi:
                 if c not in self.char2idx:
-                    self.char2idx[c] = i
-                    self.idx2char[i] = c
-                    i += 1
-        '''Maximum length is set to constant number for CNN, and max(legths) for RNN'''
-        if isinstance(self.smiles_col, list) is False:
-            self.max_len = df[self.smiles_col].str.len().max()
-        else:
-            max_len = 0
-            for i in self.smiles_col:
-                m = df[i].str.len().max()
-                if m > max_len:
-                    max_len = m
-            self.max_len = max_len
+                    self.char2idx[c] = step
+                    self.idx2char[step] = c
+                    step += 1
     
     def save(self, file_path):
         import json
@@ -123,6 +113,20 @@ class Vocab:
             char2idx = json.load(f)
         idx2char = {v:k for k,v in char2idx.items()}
         return cls(None, None, char2idx, idx2char)
+
+    def encode_special(self, smi):
+        smi = smi.replace('Cl', 'Q')
+        smi = smi.replace('Br', 'W')
+        smi = smi.replace('[nH]', 'X')
+        smi = smi.replace('[H]', 'Y')
+        return smi 
+
+    def decode_special(self, smi):
+        smi = smi.replace('Q', 'Cl')
+        smi = smi.replace('W','Br')
+        smi = smi.replace('X','[nH]')
+        smi = smi.replace('Y','[H]')
+        return smi
         
 
 class AtomVocab(Vocab):
@@ -151,14 +155,15 @@ class AtomVocab(Vocab):
                 self.idx2char[i] = c
                 i += 1
         all_smi = df[self.smiles_col].values.flatten()
-        lengths = []
-        for _, smi in enumerate(tqdm(all_smi)):
+        for j, smi in enumerate(tqdm(all_smi)):
             smi = atomwise_tokenizer(smi)
             if len(smi) > self.max_len:
                 self.max_len = len(smi)
 
             for c in smi:
                 if c not in self.char2idx:
+                    if i == 0:
+                        print(c)
                     self.char2idx[c] = i
                     self.idx2char[i] = c
                     i += 1
