@@ -1,6 +1,6 @@
 # VAE-Plus
 
-SOTA Implementations of Transformer & RNN Variational Autoencoders without posterior collapse
+Pytorch Implementations of Transformer & RNN Variational Autoencoders mitigating posterior collapse
 
 ---
 
