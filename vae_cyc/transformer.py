@@ -115,7 +115,7 @@ class Transformer(pl.LightningModule):
             # last_hidden_state = masked_encodings.sum(dim=1) / lengths.unsqueeze(-1)
             
             # usa last non padding token 
-            mask = mask.bool()
+            mask = ~mask.bool()
             lengths = (mask).sum(dim=1)
             last_hidden_state = torch.stack([encoded[i, lengths[i] - 1, :] for i in range(encoded.size(0))])
 
@@ -187,8 +187,9 @@ class Transformer(pl.LightningModule):
         from vae_cyc.dataset import TransformerSMILESDataset
         ds = TransformerSMILESDataset(smiles, self.vocab, max_len=self.max_seq_length)
         dl = torch.utils.data.DataLoader(ds, batch_size=1, collate_fn=ds.collate)
-        print(ds)
-        latents = []
+        # print(ds)
+        # latents = []
+        return dl
         with torch.no_grad():
             for batch in dl:
                 with_bos, _, masks = batch
@@ -227,7 +228,7 @@ class Transformer(pl.LightningModule):
         z = self.resize_latent_to_memory(z, tgt_tokens.size(1)) 
         
         with torch.no_grad():
-            for i in range(self.max_seq_length):
+            for i in range(self.max_seq_length - 1):
                 tgt_mask = self.generate_square_subsequent_mask(tgt_tokens.size(1)).to(self.device)
                 decoded = self.decoder(tgt_tokens,z, tgt_mask=tgt_mask)
                 output_v = self.output_fc(decoded)
@@ -243,5 +244,6 @@ class Transformer(pl.LightningModule):
                 
                 tgt_tokens = self.embedding(tgt_tokens) + self.positional_encoding[:, : tgt_tokens.size(1), :]
                 s += self.vocab.idx2char[top_char.item()]
+                
         return s
 

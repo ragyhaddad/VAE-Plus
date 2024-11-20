@@ -99,6 +99,6 @@ class TransformerSMILESDataset:
         with_eos = torch.stack(with_eos)
         # with_bos = torch.nn.utils.rnn.pad_sequence(with_bos, batch_first=True, padding_value=self.pad_idx)
         # with_eos = torch.nn.utils.rnn.pad_sequence(with_eos, batch_first=True, padding_value=self.pad_idx)
-        attention_masks = (with_bos != self.pad_idx).float()
+        attention_masks = (with_bos == self.pad_idx).bool() # this is the padding mask
         # masks = torch.nn.utils.rnn.pad_sequence(masks, batch_first=True, padding_value=self.pad_idx)
         return with_bos, with_eos, attention_masks
