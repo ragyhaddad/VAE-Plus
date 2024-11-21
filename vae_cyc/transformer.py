@@ -1,7 +1,6 @@
 import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
-import math
 from torch import nn
 
 
@@ -28,11 +27,10 @@ class Transformer(pl.LightningModule):
         # Embedding layer
         self.embedding = nn.Embedding(vocab_size, embed_size,padding_idx=vocab.pad_idx)
 
-        # self.positional_encoding = PositionalEncoding(embed_size, max_len=max_seq_length)
+        # Positional encoding - learnable
         self.positional_encoding = nn.Parameter(
             torch.zeros(1, max_seq_length, embed_size)
         )
-        # self.positional_encoding = LearnablePositionalEncoding(d_model=embed_size, max_len=max_seq_length)
         # Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(
             embed_size, num_heads, hidden_dim, batch_first=True
@@ -71,7 +69,6 @@ class Transformer(pl.LightningModule):
 
     def cyclical_annealing(self, T, M, step, R=0.4, max_kl_weight=1):
         """
-        Implementing: <https://arxiv.org/abs/1903.10145>
         T = Total steps
         M = Number of cycles
         R = Proportion used to increase beta
@@ -101,26 +98,15 @@ class Transformer(pl.LightningModule):
         return mask
 
     def encode(self, x, mask=None):
-        # emb = self.embedding(x) + self.positional_encoding[:, : x.size(1), :]
         emb = self.embedding(x) + self.positional_encoding[:, : x.size(1), :]
         encoded = self.encoder(emb, src_key_padding_mask=mask)
-        
 
-        # Improved masking handling
         if mask is not None:
-            # Use masked mean or use last non-padding token
-            # mask = mask.bool()
-            # lengths = (mask).sum(dim=1)
-            # masked_encodings = encoded * (mask.unsqueeze(-1))
-            # last_hidden_state = masked_encodings.sum(dim=1) / lengths.unsqueeze(-1)
-            
-            # usa last non padding token 
             mask = ~mask.bool()
             lengths = (mask).sum(dim=1)
             last_hidden_state = torch.stack([encoded[i, lengths[i] - 1, :] for i in range(encoded.size(0))])
 
         else:
-            # last_hidden_state = encoded.mean(dim=1)
             last_hidden_state = encoded[:, -1, :]
               
         mu_vector = self.fc_mu(last_hidden_state)
@@ -134,14 +120,13 @@ class Transformer(pl.LightningModule):
     def decode(self, z, tgt, mask=None):
         z = self.fc_latent_to_hidden(z)
         z = self.resize_latent_to_memory(z, tgt.size(1))
-        memory = z # This already should contain positional encoding information. 
         tgt = self.embedding(tgt) + self.positional_encoding[:, : tgt.size(1), :]
 
         # Autoregressive training - This allows the model to generate the next token in the sequence without seeing the future tokens.
         tgt_mask = self.generate_square_subsequent_mask(tgt.size(1)).to(tgt.device)
         
         decoded = self.decoder(
-            tgt, memory, tgt_mask=tgt_mask, tgt_key_padding_mask=mask
+            tgt, z, tgt_mask=tgt_mask, tgt_key_padding_mask=mask
         )
         outputs_v = self.output_fc(decoded) # Output logits
 
@@ -149,7 +134,7 @@ class Transformer(pl.LightningModule):
 
     def forward(self, batch):
         with_bos, with_eos, masks = batch
-        last_hidden_state, emb, logvar, mu = self.encode(with_bos, mask=masks)
+        _, _, logvar, mu = self.encode(with_bos, mask=masks)
         z = self.reparameterize(mu, logvar)
         output_v = self.decode(z, with_bos, mask=masks)
         return output_v, with_eos, logvar, mu
@@ -187,18 +172,13 @@ class Transformer(pl.LightningModule):
         from vae_cyc.dataset import TransformerSMILESDataset
         ds = TransformerSMILESDataset(smiles, self.vocab, max_len=self.max_seq_length)
         dl = torch.utils.data.DataLoader(ds, batch_size=1, collate_fn=ds.collate)
-        # print(ds)
-        # latents = []
-        return dl
         with torch.no_grad():
             for batch in dl:
                 with_bos, _, masks = batch
-                # print(masks)
                 if include_mask:
-                    _, _, logvar, mu = self.encode(with_bos.to(self.device), mask=masks.to(self.device))
+                    _, _, _, mu = self.encode(with_bos.to(self.device), mask=masks.to(self.device))
                 else:
-                    _, _, logvar, mu = self.encode(with_bos.to(self.device), mask=None)
-                # _, _, logvar, mu = self.encode(with_bos.to(self.device))
+                    _, _, _, mu = self.encode(with_bos.to(self.device), mask=None)
                 latents.append(mu)
         latents = torch.cat(latents, dim=0)
         return latents
@@ -206,15 +186,11 @@ class Transformer(pl.LightningModule):
     def smiles_to_hidden(self, smiles, include_mask=False):
         smiles = self.vocab.encode_special(smiles[0])
         input_tokens = torch.tensor([self.vocab.sos_idx] + [self.vocab.char2idx[i] for i in smiles]).unsqueeze(0)
-        print(input_tokens)
         input_tokens = input_tokens.to(self.device)
-        mask = (input_tokens == self.vocab.pad_idx)
         _, _, _, hidden = self.encode(input_tokens, mask=None)
         return hidden
 
-
-
-    def generate(self, num_samples=1, smiles=None, include_mask=False, argmax=False):
+    def generate(self, smiles=None, include_mask=False, argmax=False):
         current_tokens = [self.vocab.char2idx[self.vocab.sos_token]]
         tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
         s = ""
@@ -228,7 +204,7 @@ class Transformer(pl.LightningModule):
         z = self.resize_latent_to_memory(z, tgt_tokens.size(1)) 
         
         with torch.no_grad():
-            for i in range(self.max_seq_length - 1):
+            for i in range(self.max_seq_length):
                 tgt_mask = self.generate_square_subsequent_mask(tgt_tokens.size(1)).to(self.device)
                 decoded = self.decoder(tgt_tokens,z, tgt_mask=tgt_mask)
                 output_v = self.output_fc(decoded)

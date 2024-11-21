@@ -82,7 +82,6 @@ class TransformerSMILESDataset:
         else:
             seq = self.sequences[idx]
             seq = str(seq, encoding='utf-8')
-            # seq = atomwise_tokenizer(seq)
             seq = self.vocab.encode_special(seq)
             tokens = [self.vocab.char2idx[i] for i in seq]
         with_bos = [self.vocab.char2idx[self.vocab.sos_token]] + tokens 
@@ -100,5 +99,4 @@ class TransformerSMILESDataset:
         # with_bos = torch.nn.utils.rnn.pad_sequence(with_bos, batch_first=True, padding_value=self.pad_idx)
         # with_eos = torch.nn.utils.rnn.pad_sequence(with_eos, batch_first=True, padding_value=self.pad_idx)
         attention_masks = (with_bos == self.pad_idx).bool() # this is the padding mask
-        # masks = torch.nn.utils.rnn.pad_sequence(masks, batch_first=True, padding_value=self.pad_idx)
         return with_bos, with_eos, attention_masks
