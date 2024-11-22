@@ -17,6 +17,9 @@ class Transformer(pl.LightningModule):
         vocab,
         total_steps_annealing=100000,
         num_cycles=100,
+        kl_weight=0.6,
+        lr=0.0001,
+        max_kl_weight=0.6,
 
     ):
         super().__init__()
@@ -56,9 +59,13 @@ class Transformer(pl.LightningModule):
         self.criterion = torch.nn.CrossEntropyLoss(
             ignore_index=vocab.char2idx[vocab.pad_token], reduction="sum"
         )
-        self.kl_weight = 0.6
+        self.kl_weight = kl_weight
         self.total_steps_annealing = total_steps_annealing
         self.num_cycles = num_cycles
+
+        self.lr = lr
+        self.max_kl_weight = max_kl_weight
+        
         self.save_hyperparameters()
 
     def compute_loss(self, outputs, targets, logvar, mu):
@@ -121,7 +128,6 @@ class Transformer(pl.LightningModule):
         z = self.fc_latent_to_hidden(z)
         z = self.resize_latent_to_memory(z, tgt.size(1))
         tgt = self.embedding(tgt) + self.positional_encoding[:, : tgt.size(1), :]
-
         # Autoregressive training - This allows the model to generate the next token in the sequence without seeing the future tokens.
         tgt_mask = self.generate_square_subsequent_mask(tgt.size(1)).to(tgt.device)
         
@@ -129,7 +135,6 @@ class Transformer(pl.LightningModule):
             tgt, z, tgt_mask=tgt_mask, tgt_key_padding_mask=mask
         )
         outputs_v = self.output_fc(decoded) # Output logits
-
         return outputs_v
 
     def forward(self, batch):
@@ -140,13 +145,15 @@ class Transformer(pl.LightningModule):
         return output_v, with_eos, logvar, mu
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=0.0001)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+        return {'optimizer': optimizer, 'lr_scheduler': scheduler, 'monitor': 'val_loss'}
 
     def training_step(self, batch, batch_idx):
         outputs_v, with_eos, logvar, mu = self.forward(batch)
         r_loss, kl_loss = self.compute_loss(outputs_v, with_eos, logvar, mu)
         self.kl_weight = self.cyclical_annealing(
-            self.total_steps_annealing, self.num_cycles, step=self.global_step, max_kl_weight=0.6
+            self.total_steps_annealing, self.num_cycles, step=self.global_step, max_kl_weight=self.max_kl_weight
         )
         r = {}
         r["r_loss"] = r_loss
@@ -154,7 +161,7 @@ class Transformer(pl.LightningModule):
         r["loss"] = r_loss + kl_loss
         r["kl_weight"] = self.kl_weight
         for key in r:
-            self.log(f"train_{key}", r[key])
+            self.log(f"train_{key}", r[key], sync_dist=True)
         return r
 
     def validation_step(self, batch, batch_idx):
@@ -165,7 +172,7 @@ class Transformer(pl.LightningModule):
         r["kl_loss"] = kl_loss
         r["loss"] = r_loss + kl_loss
         for key in r:
-            self.log(f"val_{key}", r[key])
+            self.log(f"val_{key}", r[key], sync_dist=True)
         return r
 
     def smiles_to_latent(self, smiles, include_mask=False):
@@ -217,9 +224,7 @@ class Transformer(pl.LightningModule):
                     break 
                 current_tokens.append(top_char.item())
                 tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
-                
                 tgt_tokens = self.embedding(tgt_tokens) + self.positional_encoding[:, : tgt_tokens.size(1), :]
                 s += self.vocab.idx2char[top_char.item()]
-                
         return s
 

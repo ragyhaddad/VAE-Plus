@@ -25,6 +25,8 @@ class Vocab:
         self.smiles_col = smiles_col
         self.special_tokens = [self.sos_token, self.eos_token, self.pad_token, self.unk_token]
         self.special_atom = {'Cl': 'Q', 'Br': 'W', '[nH]': 'X', '[H]': 'Y'}
+        self.step = len(self.char2idx)
+
         if df is not None:
             self.extract_charset(df)
 
@@ -79,12 +81,11 @@ class Vocab:
         from tqdm import tqdm
 
         print('extracting charset..')
-        step = 0
+        
         for c in self.special_tokens:
             if c not in self.char2idx:
-                self.char2idx[c] = step
-                self.idx2char[step] = c
-                step += 1
+                self.char2idx[c] = self.step
+                self.step += 1
         all_smi = df[self.smiles_col].values.flatten()
         lengths = []
         for _, smi in enumerate(tqdm(all_smi)):
@@ -97,9 +98,9 @@ class Vocab:
 
             for c in smi:
                 if c not in self.char2idx:
-                    self.char2idx[c] = step
-                    self.idx2char[step] = c
-                    step += 1
+                    self.char2idx[c] = self.step
+                    self.step += 1
+        self.idx2char = {v:k for k,v in self.char2idx.items()}
     
     def save(self, file_path):
         import json
