@@ -15,8 +15,8 @@ class Transformer(pl.LightningModule):
         num_layers,
         max_seq_length,
         vocab,
-        total_steps_annealing=100000,
-        num_cycles=100,
+        total_steps_annealing=195313,
+        num_cycles=150,
         kl_weight=0.6,
         lr=0.0001,
         max_kl_weight=0.6,
@@ -28,7 +28,7 @@ class Transformer(pl.LightningModule):
         self.max_seq_length = max_seq_length
 
         # Embedding layer
-        self.embedding = nn.Embedding(vocab_size, embed_size,padding_idx=vocab.pad_idx)
+        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=vocab.pad_idx)
 
         # Positional encoding - learnable
         self.positional_encoding = nn.Parameter(
@@ -57,7 +57,7 @@ class Transformer(pl.LightningModule):
         self.output_fc = nn.Linear(embed_size, vocab_size)
         self.vocab = vocab
         self.criterion = torch.nn.CrossEntropyLoss(
-            ignore_index=vocab.char2idx[vocab.pad_token], reduction="sum"
+            ignore_index=vocab.char2idx[vocab.pad_token],reduction='sum'
         )
         self.kl_weight = kl_weight
         self.total_steps_annealing = total_steps_annealing
@@ -69,6 +69,8 @@ class Transformer(pl.LightningModule):
         self.save_hyperparameters()
 
     def compute_loss(self, outputs, targets, logvar, mu):
+        lengths = (targets != self.vocab.pad_idx).sum(dim=1)
+        outputs = outputs[:, : targets.size(1), :]
         r_loss = self.criterion(outputs.view(-1, outputs.size(-1)), targets.view(-1))
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         kl_loss = kl_loss * self.kl_weight
@@ -107,14 +109,17 @@ class Transformer(pl.LightningModule):
     def encode(self, x, mask=None):
         emb = self.embedding(x) + self.positional_encoding[:, : x.size(1), :]
         encoded = self.encoder(emb, src_key_padding_mask=mask)
-
+        # Masks in Pytorch are False for real tokens and True for padding tokens
         if mask is not None:
             mask = ~mask.bool()
             lengths = (mask).sum(dim=1)
-            last_hidden_state = torch.stack([encoded[i, lengths[i] - 1, :] for i in range(encoded.size(0))])
+            # pooled mean factor lengths 
+            last_hidden_state = torch.sum(encoded * mask.unsqueeze(2), dim=1) / lengths.unsqueeze(1)
+            # last_hidden_state = torch.stack([encoded[i, lengths[i] - 1, :] for i in range(encoded.size(0))])
 
         else:
-            last_hidden_state = encoded[:, -1, :]
+            # last_hidden_state = encoded[:, -1, :]
+            last_hidden_state = torch.mean(encoded, dim=1)
               
         mu_vector = self.fc_mu(last_hidden_state)
         logvar_vector = self.fc_logvar(last_hidden_state)
@@ -160,6 +165,7 @@ class Transformer(pl.LightningModule):
         r["kl_loss"] = kl_loss
         r["loss"] = r_loss + kl_loss
         r["kl_weight"] = self.kl_weight
+        r['lr'] = self.lr
         for key in r:
             self.log(f"train_{key}", r[key], sync_dist=True)
         return r
@@ -211,7 +217,7 @@ class Transformer(pl.LightningModule):
         z = self.resize_latent_to_memory(z, tgt_tokens.size(1)) 
         
         with torch.no_grad():
-            for i in range(self.max_seq_length):
+            for i in range(self.max_seq_length - 1):
                 tgt_mask = self.generate_square_subsequent_mask(tgt_tokens.size(1)).to(self.device)
                 decoded = self.decoder(tgt_tokens,z, tgt_mask=tgt_mask)
                 output_v = self.output_fc(decoded)
