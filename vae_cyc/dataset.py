@@ -129,7 +129,7 @@ class TransformerMemapDataset:
             print(self.metadata)
         self.dtype = self.metadata['dtype']
         self.shape = tuple(self.metadata['shape'])
-        self.max_len = self.shape[1]
+        self.max_len = self.shape[1] + 1
     
     def read_memmap(self, file_path):
         self.memmap = np.memmap(file_path, dtype=self.dtype, mode='r', shape=self.shape)
@@ -141,6 +141,9 @@ class TransformerMemapDataset:
         sample = self.memmap[idx]
         with_bos = sample[sample != self.vocab.eos_idx]
         with_eos = sample[sample != self.vocab.sos_idx]
+        # padding 
+        # with_bos = np.pad(with_bos, (0, self.max_len - len(with_bos)), mode='constant', constant_values=self.vocab.pad_idx)
+        # with_eos = np.pad(with_eos, (0, self.max_len - len(with_eos)), mode='constant', constant_values=self.vocab.pad_idx)
         return torch.tensor(with_bos).long(), torch.tensor(with_eos).long()
 
     def collate(self, batch):
@@ -148,14 +151,12 @@ class TransformerMemapDataset:
 
         with_bos = torch.stack(with_bos)
         with_eos = torch.stack(with_eos)
-
         with_bos = pad_sequence(with_bos, batch_first=True, padding_value=self.vocab.pad_idx)
         with_eos = pad_sequence(with_eos, batch_first=True, padding_value=self.vocab.pad_idx)
+
+
 
         masks = (with_bos == self.vocab.pad_idx).bool()
         
         return with_bos, with_eos, masks
 
-
-
-    
