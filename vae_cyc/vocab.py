@@ -1,4 +1,8 @@
+import re 
 from SmilesPE.pretokenizer import atomwise_tokenizer
+
+
+        
 
 class Vocab:
     def __init__(self, df, smiles_col, char2idx={}, idx2char={}):
@@ -27,8 +31,8 @@ class Vocab:
         self.special_atom = {'Cl': 'Q', 'Br': 'W', '[nH]': 'X', '[H]': 'Y'}
         self.step = len(self.char2idx)
 
-        if df is not None:
-            self.extract_charset(df)
+        # if df is not None:
+        #     self.extract_charset(df)
 
     @property
     def sos_idx(self):
@@ -128,6 +132,10 @@ class Vocab:
         smi = smi.replace('X','[nH]')
         smi = smi.replace('Y','[H]')
         return smi
+    
+    def tokenize(self, smi):
+        smi_split = self.smi_tokenizer(smi)
+        return smi_split
         
 
 class AtomVocab(Vocab):
@@ -185,3 +193,58 @@ class AminoAcidVocab(Vocab):
             self.char2idx[aa] = i
             self.idx2char[i] = aa
             i += 1
+
+
+class RegexVocab(Vocab):
+    def __init__(self, df, smiles_col, char2idx={}, idx2char={}):
+        super().__init__(df, smiles_col, char2idx, idx2char)
+        self.regex_pattern = r"(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\(|\)|\.|=|#|-|\+|\\|\/|:|~|@|\?|>>?|\*|\$|\%[0-9]{2}|[0-9])"
+        # self.regex_pattern = r"(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\(|\)|\.|=|#||\+|\\\\\/|:||@|\?|>|\*|\$|\%[0–9]{2}|[0–9])"
+
+        self.step = len(char2idx)
+        if df is not None:
+            self.extract_charset(df)
+    
+    def extract_charset(self, df):
+        print('extracting charset with regex tokenizer..')
+
+        """
+        Extract charset from SMILES strings
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame containing SMILES strings
+
+        """
+        from tqdm import tqdm
+        self.max_len = 0
+        for c in self.special_tokens:
+            if c not in self.char2idx:
+                self.char2idx[c] = self.step
+                self.idx2char[self.step] = c
+                self.step += 1
+        all_smi = df[self.smiles_col].values.flatten()
+        for j, smi in enumerate(tqdm(all_smi)):
+            smi = self.smi_tokenizer(smi)
+            if len(smi) > self.max_len:
+                self.max_len = len(smi)
+
+            for c in smi:
+                if c not in self.char2idx:
+                    if self.step == 0:
+                        print(c)
+                    self.char2idx[c] = self.step
+                    self.idx2char[self.step] = c
+                    self.step += 1
+
+
+    def smi_tokenizer(self, smi):
+        regex = re.compile(self.regex_pattern)
+        tokens = [token for token in regex.findall(smi)]
+        assert smi == ''.join(tokens)
+        return list(tokens)
+    
+    def tokenize(self, smi):
+        smi_split = self.smi_tokenizer(smi)
+        return smi_split

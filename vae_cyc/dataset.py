@@ -71,7 +71,9 @@ class TransformerSMILESDataset:
         if self.pretokenize:
             for seq in tqdm(sequences):
                 seq = str(seq, encoding='utf-8')
-                seq = self.vocab.encode_special(seq)
+                # seq = self.vocab.encode_special(seq)
+                seq = self.vocab.tokenize(seq)
+                print(seq)
                 tokens = [self.vocab.char2idx[i] for i in seq]
                 self.tokens.append(tokens)
     
@@ -84,7 +86,7 @@ class TransformerSMILESDataset:
         else:
             seq = self.sequences[idx]
             seq = str(seq, encoding='utf-8')
-            seq = self.vocab.encode_special(seq)
+            seq = self.vocab.tokenize(seq)
             tokens = [self.vocab.char2idx[i] for i in seq]
         with_bos = [self.vocab.char2idx[self.vocab.sos_token]] + tokens 
         with_eos = tokens + [self.vocab.char2idx[self.vocab.eos_token]]
@@ -119,6 +121,7 @@ class TransformerMemapDataset:
         self.eos_idx = vocab.eos_idx
         self.read_metadata(self.file_name + '.json')
         self.read_memmap(self.file_name + '.dat')
+    
     def read_metadata(self, file_path):
         import json
         with open(file_path, 'r') as f:
@@ -138,18 +141,19 @@ class TransformerMemapDataset:
         sample = self.memmap[idx]
         with_bos = sample[sample != self.vocab.eos_idx]
         with_eos = sample[sample != self.vocab.sos_idx]
-        # padding 
-        with_bos = np.pad(with_bos, (0, self.max_len - len(with_bos)), mode='constant', constant_values=self.vocab.pad_idx)
-        with_eos = np.pad(with_eos, (0, self.max_len - len(with_eos)), mode='constant', constant_values=self.vocab.pad_idx)
         return torch.tensor(with_bos).long(), torch.tensor(with_eos).long()
 
     def collate(self, batch):
         with_bos, with_eos = zip(*batch)
+
         with_bos = torch.stack(with_bos)
         with_eos = torch.stack(with_eos)
+
+        with_bos = pad_sequence(with_bos, batch_first=True, padding_value=self.vocab.pad_idx)
+        with_eos = pad_sequence(with_eos, batch_first=True, padding_value=self.vocab.pad_idx)
+
         masks = (with_bos == self.vocab.pad_idx).bool()
         
-        # print(with_bos.shape, with_eos.shape, masks.shape)
         return with_bos, with_eos, masks
 
 

@@ -15,8 +15,8 @@ class Transformer(pl.LightningModule):
         num_layers,
         max_seq_length,
         vocab,
-        total_steps_annealing=100000,
-        num_cycles=100,
+        total_steps_annealing=195313,
+        num_cycles=150,
         kl_weight=0.6,
         lr=0.0001,
         max_kl_weight=0.6,
@@ -28,7 +28,7 @@ class Transformer(pl.LightningModule):
         self.max_seq_length = max_seq_length
 
         # Embedding layer
-        self.embedding = nn.Embedding(vocab_size, embed_size,padding_idx=vocab.pad_idx)
+        self.embedding = nn.Embedding(vocab_size, embed_size, padding_idx=vocab.pad_idx)
 
         # Positional encoding - learnable
         self.positional_encoding = nn.Parameter(
@@ -57,7 +57,7 @@ class Transformer(pl.LightningModule):
         self.output_fc = nn.Linear(embed_size, vocab_size)
         self.vocab = vocab
         self.criterion = torch.nn.CrossEntropyLoss(
-            ignore_index=vocab.char2idx[vocab.pad_token], reduction="sum"
+            ignore_index=vocab.char2idx[vocab.pad_token],reduction='sum'
         )
         self.kl_weight = kl_weight
         self.total_steps_annealing = total_steps_annealing
@@ -69,6 +69,8 @@ class Transformer(pl.LightningModule):
         self.save_hyperparameters()
 
     def compute_loss(self, outputs, targets, logvar, mu):
+        lengths = (targets != self.vocab.pad_idx).sum(dim=1)
+        outputs = outputs[:, : targets.size(1), :]
         r_loss = self.criterion(outputs.view(-1, outputs.size(-1)), targets.view(-1))
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         kl_loss = kl_loss * self.kl_weight
@@ -107,14 +109,17 @@ class Transformer(pl.LightningModule):
     def encode(self, x, mask=None):
         emb = self.embedding(x) + self.positional_encoding[:, : x.size(1), :]
         encoded = self.encoder(emb, src_key_padding_mask=mask)
-
+        # Masks in Pytorch are False for real tokens and True for padding tokens
         if mask is not None:
             mask = ~mask.bool()
             lengths = (mask).sum(dim=1)
-            last_hidden_state = torch.stack([encoded[i, lengths[i] - 1, :] for i in range(encoded.size(0))])
+            # pooled mean factor lengths 
+            last_hidden_state = torch.sum(encoded * mask.unsqueeze(2), dim=1) / lengths.unsqueeze(1)
+            # last_hidden_state = torch.stack([encoded[i, lengths[i] - 1, :] for i in range(encoded.size(0))])
 
         else:
-            last_hidden_state = encoded[:, -1, :]
+            # last_hidden_state = encoded[:, -1, :]
+            last_hidden_state = torch.mean(encoded, dim=1)
               
         mu_vector = self.fc_mu(last_hidden_state)
         logvar_vector = self.fc_logvar(last_hidden_state)
@@ -146,7 +151,7 @@ class Transformer(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1, verbose=True)
         return {'optimizer': optimizer, 'lr_scheduler': scheduler, 'monitor': 'val_loss'}
 
     def training_step(self, batch, batch_idx):
@@ -160,6 +165,7 @@ class Transformer(pl.LightningModule):
         r["kl_loss"] = kl_loss
         r["loss"] = r_loss + kl_loss
         r["kl_weight"] = self.kl_weight
+        r['lr'] = self.lr
         for key in r:
             self.log(f"train_{key}", r[key], sync_dist=True)
         return r
@@ -175,10 +181,11 @@ class Transformer(pl.LightningModule):
             self.log(f"val_{key}", r[key], sync_dist=True)
         return r
 
-    def smiles_to_latent(self, smiles, include_mask=False):
+    def smiles_to_latent(self, smiles:list, include_mask:bool=True, batch_size=128):
         from vae_cyc.dataset import TransformerSMILESDataset
         ds = TransformerSMILESDataset(smiles, self.vocab, max_len=self.max_seq_length)
-        dl = torch.utils.data.DataLoader(ds, batch_size=1, collate_fn=ds.collate)
+        dl = torch.utils.data.DataLoader(ds, batch_size=batch_size, collate_fn=ds.collate)
+        latents = []
         with torch.no_grad():
             for batch in dl:
                 with_bos, _, masks = batch
@@ -197,12 +204,15 @@ class Transformer(pl.LightningModule):
         _, _, _, hidden = self.encode(input_tokens, mask=None)
         return hidden
 
-    def generate(self, smiles=None, include_mask=False, argmax=False):
+
+    def generate(self, smiles=None, include_mask=False, argmax=False, add_gaussian=False, sigma=0.5):
         current_tokens = [self.vocab.char2idx[self.vocab.sos_token]]
         tgt_tokens = torch.tensor([current_tokens]).long().to(self.device)
         s = ""
         if smiles is not None:
-            z = self.smiles_to_hidden(smiles, include_mask=include_mask)
+            z = self.smiles_to_latent(smiles, include_mask=include_mask)
+            if add_gaussian:
+                z = z + torch.normal(0,sigma, size=z.size()).to(self.device)
         else:      
             z = torch.normal(0, 1, size=(1, self.latent_dim)).to(self.device)
         tgt_tokens = self.embedding(tgt_tokens) + self.positional_encoding[:, : tgt_tokens.size(1), :]
@@ -211,7 +221,7 @@ class Transformer(pl.LightningModule):
         z = self.resize_latent_to_memory(z, tgt_tokens.size(1)) 
         
         with torch.no_grad():
-            for i in range(self.max_seq_length):
+            for i in range(self.max_seq_length - 1):
                 tgt_mask = self.generate_square_subsequent_mask(tgt_tokens.size(1)).to(self.device)
                 decoded = self.decoder(tgt_tokens,z, tgt_mask=tgt_mask)
                 output_v = self.output_fc(decoded)
@@ -227,4 +237,44 @@ class Transformer(pl.LightningModule):
                 tgt_tokens = self.embedding(tgt_tokens) + self.positional_encoding[:, : tgt_tokens.size(1), :]
                 s += self.vocab.idx2char[top_char.item()]
         return s
+
+    def latent_to_smiles_batched(self, latents):
+        batch_size = latents.shape[0]
+        current_tokens = torch.tensor([[self.vocab.char2idx[self.vocab.sos_token]] for _ in range(batch_size)]).to(self.device)
+        tgt_tokens = torch.tensor(current_tokens).long().to(self.device)
+        masks = tgt_tokens
+        masks = (masks == self.vocab.pad_idx).bool()
+        tgt_tokens = self.embedding(tgt_tokens) + self.positional_encoding[:, :tgt_tokens.size(1), :]
+        
+        z = self.fc_latent_to_hidden(latents)
+        z = self.resize_latent_to_memory(z, tgt_tokens.size(1))
+
+        is_done = [False for _ in range(batch_size)]
+        
+        with torch.no_grad():
+            for _ in range(self.max_seq_length - 1):
+                tgt_mask = self.generate_square_subsequent_mask(tgt_tokens.size(1)).to(self.device)
+                decoded = self.decoder(tgt_tokens, z, tgt_mask=tgt_mask, tgt_key_padding_mask=masks)
+                output_v = self.output_fc(decoded)
+                output_v = output_v[:, -1, :] # last 
+                top_char = torch.argmax(output_v, dim=1) 
+                current_tokens = torch.cat([current_tokens, top_char.unsqueeze(1)], dim=1).long()
+                if torch.sum(current_tokens[:,-1]) == batch_size * self.vocab.eos_idx:
+                    break
+                masks = (current_tokens == self.vocab.pad_idx).bool().to(self.device)
+                tgt_tokens = self.embedding(current_tokens) + self.positional_encoding[:, :current_tokens.size(1), :]
+                
+        results = []
+        for index in range(batch_size):
+            chars = [self.vocab.idx2char[i.item()] for i in current_tokens[index]] 
+            chars = "".join(chars)
+            chars = chars.replace(self.vocab.sos_token, "")
+            try:
+                index_eos = chars.index(self.vocab.eos_token)
+            except ValueError:
+                index_eos = self.max_seq_length
+            chars = chars[0:index_eos]
+            chars = chars.replace(self.vocab.eos_token, "")
+            results.append(chars)
+        return results
 
